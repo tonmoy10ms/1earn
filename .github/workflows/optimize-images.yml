@@ -1,0 +1,272 @@
+name: 🖼️ Optimize Images
+
+on:
+  push:
+    paths:
+      - 'assets/**/*.png'
+      - 'assets/**/*.jpg'
+      - 'assets/**/*.jpeg'
+      - 'assets/**/*.gif'
+  pull_request:
+    paths:
+      - 'assets/**/*.png'
+      - 'assets/**/*.jpg'
+      - 'assets/**/*.jpeg'
+      - 'assets/**/*.gif'
+
+jobs:
+  optimize-images:
+    name: 🔧 Optimize Images
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📂 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: 🛠️ Install image optimization tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y optipng pngquant jpegoptim webp
+          
+      - name: 📊 Analyze current images
+        run: |
+          echo "## 📊 Image Analysis Report" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          
+          png_count=$(find assets/ -name "*.png" | wc -l || echo "0")
+          jpg_count=$(find assets/ -name "*.jpg" -o -name "*.jpeg" | wc -l || echo "0")
+          gif_count=$(find assets/ -name "*.gif" | wc -l || echo "0")
+          total_size=$(du -sh assets/ | cut -f1 || echo "0")
+          large_files=$(find assets/ -type f \( -name "*.png" -o -name "*.jpg" -o -name "*.jpeg" \) -size +100k | wc -l || echo "0")
+          
+          echo "| PNG files | $png_count |" >> $GITHUB_STEP_SUMMARY
+          echo "| JPEG files | $jpg_count |" >> $GITHUB_STEP_SUMMARY
+          echo "| GIF files | $gif_count |" >> $GITHUB_STEP_SUMMARY
+          echo "| Total size | $total_size |" >> $GITHUB_STEP_SUMMARY
+          echo "| Files >100KB | $large_files |" >> $GITHUB_STEP_SUMMARY
+          
+      - name: 🔍 Check for large images
+        id: check_large
+        run: |
+          large_images=$(find assets/ -type f \( -name "*.png" -o -name "*.jpg" -o -name "*.jpeg" \) -size +200k)
+          if [ -n "$large_images" ]; then
+            echo "found_large=true" >> $GITHUB_OUTPUT
+            echo "## ⚠️ Large Images Found" >> $GITHUB_STEP_SUMMARY
+            echo "The following images are larger than 200KB and should be optimized:" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            while IFS= read -r file; do
+              size=$(du -h "$file" | cut -f1)
+              echo "- \`$file\` ($size)" >> $GITHUB_STEP_SUMMARY
+            done <<< "$large_images"
+          else
+            echo "found_large=false" >> $GITHUB_OUTPUT
+          fi
+          
+      - name: 🖼️ Optimize PNG images
+        run: |
+          echo "## 🔧 PNG Optimization Results" >> $GITHUB_STEP_SUMMARY
+          
+          optimized_count=0
+          total_savings=0
+          
+          for file in $(find assets/ -name "*.png" -size +50k); do
+            if [ -f "$file" ]; then
+              size_before=$(stat -c%s "$file")
+              
+              # Optimize with optipng
+              optipng -o2 -quiet "$file" || true
+              
+              # Further optimize with pngquant if it's a photo-like image
+              if pngquant --quality=70-85 --ext .png --force "$file" 2>/dev/null; then
+                echo "✨ Optimized with pngquant: $file"
+              fi
+              
+              size_after=$(stat -c%s "$file")
+              savings=$((size_before - size_after))
+              
+              if [ $savings -gt 0 ]; then
+                optimized_count=$((optimized_count + 1))
+                total_savings=$((total_savings + savings))
+                percentage=$(( (savings * 100) / size_before ))
+                
+                echo "- \`$(basename "$file")\`: $(numfmt --to=iec $savings) saved ($percentage%)" >> $GITHUB_STEP_SUMMARY
+              fi
+            fi
+          done
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Total PNG optimization:** $optimized_count files, $(numfmt --to=iec $total_savings) saved" >> $GITHUB_STEP_SUMMARY
+          
+      - name: 📷 Optimize JPEG images
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📷 JPEG Optimization Results" >> $GITHUB_STEP_SUMMARY
+          
+          optimized_count=0
+          total_savings=0
+          
+          for file in $(find assets/ -name "*.jpg" -o -name "*.jpeg"); do
+            if [ -f "$file" ]; then
+              size_before=$(stat -c%s "$file")
+              
+              # Optimize with jpegoptim
+              jpegoptim --max=85 --strip-all --quiet "$file" || true
+              
+              size_after=$(stat -c%s "$file")
+              savings=$((size_before - size_after))
+              
+              if [ $savings -gt 0 ]; then
+                optimized_count=$((optimized_count + 1))
+                total_savings=$((total_savings + savings))
+                percentage=$(( (savings * 100) / size_before ))
+                
+                echo "- \`$(basename "$file")\`: $(numfmt --to=iec $savings) saved ($percentage%)" >> $GITHUB_STEP_SUMMARY
+              fi
+            fi
+          done
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Total JPEG optimization:** $optimized_count files, $(numfmt --to=iec $total_savings) saved" >> $GITHUB_STEP_SUMMARY
+          
+      - name: 🌐 Generate WebP versions for large images
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 🌐 WebP Generation" >> $GITHUB_STEP_SUMMARY
+          
+          webp_count=0
+          
+          # Convert large JPEGs and PNGs to WebP
+          for file in $(find assets/ -type f \( -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" \) -size +100k); do
+            if [ -f "$file" ]; then
+              webp_file="${file%.*}.webp"
+              
+              # Only create WebP if it doesn't exist
+              if [ ! -f "$webp_file" ]; then
+                if cwebp -q 80 "$file" -o "$webp_file" 2>/dev/null; then
+                  webp_count=$((webp_count + 1))
+                  
+                  original_size=$(stat -c%s "$file")
+                  webp_size=$(stat -c%s "$webp_file")
+                  savings=$((original_size - webp_size))
+                  percentage=$(( (savings * 100) / original_size ))
+                  
+                  echo "- \`$(basename "$webp_file")\`: $(numfmt --to=iec $savings) smaller ($percentage%)" >> $GITHUB_STEP_SUMMARY
+                fi
+              fi
+            fi
+          done
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**WebP files generated:** $webp_count" >> $GITHUB_STEP_SUMMARY
+          
+      - name: 📈 Calculate total impact
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 📈 Overall Impact" >> $GITHUB_STEP_SUMMARY
+          
+          # Get final statistics
+          total_size_after=$(du -sh assets/ | cut -f1)
+          png_count=$(find assets/ -name "*.png" | wc -l)
+          jpg_count=$(find assets/ -name "*.jpg" -o -name "*.jpeg" | wc -l)
+          webp_count=$(find assets/ -name "*.webp" | wc -l)
+          large_files_after=$(find assets/ -type f \( -name "*.png" -o -name "*.jpg" -o -name "*.jpeg" \) -size +200k | wc -l)
+          
+          echo "| Metric | After Optimization |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Total size | $total_size_after |" >> $GITHUB_STEP_SUMMARY
+          echo "| PNG files | $png_count |" >> $GITHUB_STEP_SUMMARY
+          echo "| JPEG files | $jpg_count |" >> $GITHUB_STEP_SUMMARY
+          echo "| WebP files | $webp_count |" >> $GITHUB_STEP_SUMMARY
+          echo "| Files >200KB | $large_files_after |" >> $GITHUB_STEP_SUMMARY
+          
+      - name: 💾 Commit optimized images
+        if: github.event_name == 'push'
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          
+          if [ -n "$(git status --porcelain)" ]; then
+            git add assets/
+            git commit -m "🖼️ Optimize images
+            
+            - Compressed PNG and JPEG files
+            - Generated WebP versions for large images
+            - Automated optimization via GitHub Actions"
+            
+            git push
+            
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "✅ **Changes committed and pushed automatically**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "ℹ️ **No changes to commit**" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+      - name: 💡 Performance recommendations
+        if: steps.check_large.outputs.found_large == 'true'
+        run: |
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## 💡 Performance Recommendations" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### For optimal performance:" >> $GITHUB_STEP_SUMMARY
+          echo "1. **Use WebP format** - Consider using \`.webp\` versions in your documentation" >> $GITHUB_STEP_SUMMARY
+          echo "2. **Implement lazy loading** - Add \`loading=\"lazy\"\` to image tags" >> $GITHUB_STEP_SUMMARY
+          echo "3. **Responsive images** - Use \`<picture>\` elements for different screen sizes" >> $GITHUB_STEP_SUMMARY
+          echo "4. **Image dimensions** - Always specify width/height to prevent layout shift" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Example optimized image usage:" >> $GITHUB_STEP_SUMMARY
+          echo '```html' >> $GITHUB_STEP_SUMMARY
+          echo '<picture>' >> $GITHUB_STEP_SUMMARY
+          echo '  <source srcset="image.webp" type="image/webp">' >> $GITHUB_STEP_SUMMARY
+          echo '  <img src="image.png" alt="Description" loading="lazy" width="800" height="600">' >> $GITHUB_STEP_SUMMARY
+          echo '</picture>' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          
+  size-check:
+    name: 📏 Size Budget Check
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📂 Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: 📏 Check individual file sizes
+        run: |
+          echo "## 📏 Size Budget Check" >> $GITHUB_STEP_SUMMARY
+          
+          # Define size limits
+          MAX_IMAGE_SIZE=500000  # 500KB
+          MAX_TOTAL_SIZE=50000000  # 50MB
+          
+          violations=0
+          
+          # Check individual file sizes
+          for file in $(find assets/ -type f \( -name "*.png" -o -name "*.jpg" -o -name "*.jpeg" -o -name "*.gif" \)); do
+            if [ -f "$file" ]; then
+              size=$(stat -c%s "$file")
+              if [ $size -gt $MAX_IMAGE_SIZE ]; then
+                violations=$((violations + 1))
+                human_size=$(numfmt --to=iec $size)
+                echo "❌ **Size violation:** \`$file\` ($human_size) exceeds 500KB limit" >> $GITHUB_STEP_SUMMARY
+              fi
+            fi
+          done
+          
+          # Check total assets size
+          total_size=$(du -sb assets/ | cut -f1)
+          if [ $total_size -gt $MAX_TOTAL_SIZE ]; then
+            violations=$((violations + 1))
+            human_total=$(numfmt --to=iec $total_size)
+            echo "❌ **Total size violation:** Assets folder ($human_total) exceeds 50MB limit" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ $violations -eq 0 ]; then
+            echo "✅ **All files within size budgets**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Total violations:** $violations" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
